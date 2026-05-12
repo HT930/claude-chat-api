@@ -35,7 +35,7 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     system_prompt: Optional[str] = "あなたは親切なAIアシスタントです。日本語で回答してください。"
-    model: Optional[str] = "gemini-2.0-flash"
+    model: Optional[str] = "gemini-1.5-flash"
     max_tokens: Optional[int] = 1024
     stream: Optional[bool] = False
 
