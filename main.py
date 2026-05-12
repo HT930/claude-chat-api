@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import json
 from datetime import datetime
@@ -26,6 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+MODEL = "gemini-2.0-flash"
+
 # --- Schemas ---
 
 class Message(BaseModel):
@@ -35,7 +38,7 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     system_prompt: Optional[str] = "あなたは親切なAIアシスタントです。日本語で回答してください。"
-    model: Optional[str] = "gemini-1.5-flash"
+    model: Optional[str] = MODEL
     max_tokens: Optional[int] = 1024
     stream: Optional[bool] = False
 
@@ -47,14 +50,12 @@ class ChatResponse(BaseModel):
 
 # --- Helpers ---
 
-def build_gemini_history(messages: list[Message]) -> tuple[list[dict], str]:
-    """Convert messages to Gemini format. Returns (history, last_user_message)."""
+def build_history(messages: list[Message]) -> tuple[list, str]:
     history = []
     for m in messages[:-1]:
         role = "model" if m.role == "assistant" else "user"
-        history.append({"role": role, "parts": [m.content]})
-    last = messages[-1].content
-    return history, last
+        history.append(types.Content(role=role, parts=[types.Part(text=m.content)]))
+    return history, messages[-1].content
 
 # --- Routes ---
 
@@ -77,16 +78,18 @@ def chat(req: ChatRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY が設定されていません")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name=req.model,
-        system_instruction=req.system_prompt,
-    )
-
-    history, last_message = build_gemini_history(req.messages)
+    client = genai.Client(api_key=api_key)
+    history, last_message = build_history(req.messages)
 
     try:
-        chat_session = model.start_chat(history=history)
+        chat_session = client.chats.create(
+            model=req.model,
+            config=types.GenerateContentConfig(
+                system_instruction=req.system_prompt,
+                max_output_tokens=req.max_tokens,
+            ),
+            history=history,
+        )
         response = chat_session.send_message(last_message)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini API エラー: {str(e)}")
@@ -112,18 +115,20 @@ def chat_stream(req: ChatRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY が設定されていません")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name=req.model,
-        system_instruction=req.system_prompt,
-    )
-
-    history, last_message = build_gemini_history(req.messages)
+    client = genai.Client(api_key=api_key)
+    history, last_message = build_history(req.messages)
 
     def event_generator():
         try:
-            chat_session = model.start_chat(history=history)
-            for chunk in chat_session.send_message(last_message, stream=True):
+            chat_session = client.chats.create(
+                model=req.model,
+                config=types.GenerateContentConfig(
+                    system_instruction=req.system_prompt,
+                    max_output_tokens=req.max_tokens,
+                ),
+                history=history,
+            )
+            for chunk in chat_session.send_message_stream(last_message):
                 if chunk.text:
                     yield f"data: {json.dumps({'text': chunk.text})}\n\n"
             yield "data: [DONE]\n\n"
